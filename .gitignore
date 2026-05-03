@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific
+.DS_Store
+data/raw/
+data/index/
+
+# Claude Code / agent tooling
+.agents/
+.claude/
+skills-lock.json
+
+# Project brief (kept locally; not for the public repo)
+Project Brief_ GenAI Chatbot.pdf
