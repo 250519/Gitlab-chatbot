@@ -13,6 +13,18 @@ Rules:
 """
 
 
+def system_prompt_for(persona: str | None = None) -> str:
+    """Return SYSTEM_PROMPT optionally extended with a persona-specific style hint."""
+    from src.config import PERSONAS
+
+    if not persona or persona not in PERSONAS:
+        return SYSTEM_PROMPT
+    hint = PERSONAS[persona].get("style_hint", "").strip()
+    if not hint:
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\nAudience: {hint}\n"
+
+
 def build_user_prompt(question: str, snippets: list[dict]) -> str:
     """Assemble the user-turn message with retrieved context.
 

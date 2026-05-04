@@ -49,6 +49,17 @@ def stream_chat(
             yield delta.content
 
 
+def chat_once(
+    messages: list[dict[str, str]],
+    model: str = GROQ_DEFAULT_MODEL,
+    temperature: float = 0.2,
+    max_tokens: int = 256,
+) -> str:
+    """Blocking single-turn helper. Reuses ``stream_chat`` and joins tokens."""
+    return "".join(stream_chat(messages, model=model, temperature=temperature,
+                               max_tokens=max_tokens))
+
+
 if __name__ == "__main__":
     # Smoke test: python -m src.llm
     msgs = [{"role": "user", "content": "Say hello in one short sentence."}]

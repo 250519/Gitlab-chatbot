@@ -35,6 +35,21 @@ RETRIEVE_FETCH_K = 25        # over-fetch before reranking
 TOP_K_MIN = 2
 TOP_K_MAX = 10
 
+# --- Confidence gating ---
+# bge-reranker-v2-m3 returns probability-like scores in [0, 1]. Empirically:
+# strongly-relevant top hits land at 0.9+; off-topic queries top out below 0.01.
+# Below REFUSE: hard refusal, no LLM call. Below LOW: "Low" badge but answer.
+# Above HIGH: "High" badge. Otherwise "Medium".
+CONFIDENCE_REFUSE_BELOW = 0.05
+CONFIDENCE_LOW_BELOW = 0.3
+CONFIDENCE_HIGH_ABOVE = 0.7
+
+# --- Citation faithfulness ---
+# Cross-encoder score between a cited sentence and its cited chunk; below this
+# we flag the citation as "weakly supported". Lower bar than retrieval because
+# a single sentence is often shorter / less keyword-dense than a full query.
+CITATION_SUPPORT_THRESHOLD = 0.1
+
 # --- Categories (metadata tag taxonomy) ---
 # Order roughly mirrors a sidebar; "general" is the catch-all.
 CATEGORIES = [
@@ -96,7 +111,83 @@ CATEGORY_QUOTAS: dict[str, int] = {
 TOP_N_URLS: int | None = None
 
 # Categories to actually embed + upsert. Set to None to ingest all categories.
-INGEST_CATEGORIES: list[str] | None = ["values", "culture", "hiring", "engineering"]
+INGEST_CATEGORIES: list[str] | None = [
+    # First wave (already in Pinecone):
+    "values", "culture", "hiring", "engineering",
+    # Second wave:
+    "people", "product", "direction", "commercial",
+]
+
+# --- Personas (sidebar selector) ---
+# Each persona tunes the assistant's tone, the default category filter, and the
+# starter prompts shown on an empty chat. Categories are intersected with what
+# is actually ingested at query time, so missing categories degrade gracefully.
+PERSONAS: dict[str, dict] = {
+    "Just exploring": {
+        "style_hint": "",
+        "default_categories": [],
+        "starter_prompts": [
+            "What are GitLab's core values?",
+            "How does GitLab approach async communication?",
+            "Walk me through the engineering hiring process.",
+            "How does GitLab do code review?",
+        ],
+    },
+    "New hire": {
+        "style_hint": (
+            "Answer for a brand-new GitLab employee in their first weeks. "
+            "Use a warm, welcoming tone. Prefer day-one practical pointers."
+        ),
+        "default_categories": ["values", "culture", "hiring"],
+        "starter_prompts": [
+            "What should I know on my first day at GitLab?",
+            "What are GitLab's CREDIT values?",
+            "How does GitLab's all-remote culture work?",
+            "Where do I find onboarding resources?",
+        ],
+    },
+    "Engineer": {
+        "style_hint": (
+            "Answer for a software engineer. Assume technical fluency. "
+            "Prefer Engineering Handbook pages and concrete process detail."
+        ),
+        "default_categories": ["engineering", "values"],
+        "starter_prompts": [
+            "How does GitLab do code review?",
+            "What is GitLab's incident management process?",
+            "How does the engineering interview process work?",
+            "What are GitLab's engineering values?",
+        ],
+    },
+    "Hiring manager": {
+        "style_hint": (
+            "Answer for a hiring manager or recruiter. Prefer hiring, "
+            "interview, and team-org content. Be precise about process steps."
+        ),
+        "default_categories": ["hiring", "values"],
+        "starter_prompts": [
+            "Walk me through GitLab's interview process.",
+            "How does GitLab structure technical interviews?",
+            "What is GitLab's hiring philosophy?",
+            "How are interview scorecards used?",
+        ],
+    },
+    "Aspiring employee": {
+        "style_hint": (
+            "Answer for someone who wants to work at GitLab. Highlight what "
+            "the experience is like, expectations, and what makes GitLab "
+            "distinctive."
+        ),
+        "default_categories": ["hiring", "culture", "values"],
+        "starter_prompts": [
+            "What's the GitLab interview process like for engineers?",
+            "What's it like to work all-remote at GitLab?",
+            "What are GitLab's values?",
+            "What should I prepare for a GitLab interview?",
+        ],
+    },
+}
+DEFAULT_PERSONA = "Just exploring"
 
 # --- Scraper ---
 SCRAPER_USER_AGENT = (
