@@ -7,3 +7,4 @@ lxml>=5.2
 markdownify>=0.12
 python-dotenv>=1.0
 sentence-transformers>=3.0
+torchvision>=0.18

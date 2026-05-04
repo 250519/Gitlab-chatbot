@@ -14,8 +14,13 @@ PINECONE_INDEX_NAME = "gitlab-handbook"
 PINECONE_NAMESPACE = "default"
 PINECONE_CLOUD = "aws"
 PINECONE_REGION = "us-east-1"
-PINECONE_EMBED_MODEL = "multilingual-e5-large"  # Pinecone integrated inference
-PINECONE_RERANK_MODEL = "bge-reranker-v2-m3"
+
+# --- Local embedding + rerank ---
+# We embed locally to avoid Pinecone's hosted-embedding monthly token cap.
+# bge-small-en-v1.5 is 384-dim, English-only, ~25x faster than e5-large.
+LOCAL_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
+LOCAL_EMBED_DIM = 384
+LOCAL_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # --- Groq ---
 GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
@@ -89,6 +94,9 @@ CATEGORY_QUOTAS: dict[str, int] = {
 }
 # Set to None to keep everything, or an int cap.
 TOP_N_URLS: int | None = None
+
+# Categories to actually embed + upsert. Set to None to ingest all categories.
+INGEST_CATEGORIES: list[str] | None = ["values", "culture", "hiring", "engineering"]
 
 # --- Scraper ---
 SCRAPER_USER_AGENT = (

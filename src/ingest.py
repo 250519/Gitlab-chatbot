@@ -1,20 +1,21 @@
-"""Chunk scraped markdown and upsert to Pinecone (integrated inference).
+"""Chunk scraped markdown and upsert to Pinecone (local embeddings).
 
 Usage:
     python -m src.ingest                    # incremental (skips IDs already in Pinecone)
     python -m src.ingest --force            # re-upsert everything
-    python -m src.ingest --throttle 12      # tune sleep between batches
+    python -m src.ingest --throttle 0       # tune sleep between batches (default 0)
 
 Reads ``data/raw/*.md`` (produced by ``src.scraper``), chunks each file with a
-header-aware splitter, and upserts records to a Pinecone integrated index that
-auto-embeds the ``text`` field with ``multilingual-e5-large``.
+header-aware splitter, embeds each chunk locally with
+``intfloat/multilingual-e5-large`` (the same weights Pinecone's integrated index
+wraps), and upserts raw vectors via ``index.upsert(vectors=...)``.
 
-The free tier caps the embedding model at ~250K tokens/min, so we throttle
-between batches and retry with backoff on 429 responses. Re-runs are idempotent
-because record IDs are deterministic (``<page-slug>-<chunk-index>``).
+This bypasses Pinecone's hosted embedding (and its monthly token cap), so it
+runs entirely on local compute. Re-runs are idempotent because record IDs are
+deterministic (``<page-slug>-<chunk-index>``).
 
-Each record carries flat metadata fields used for filter + display:
-    _id, text, source_url, title, section_path, category, chunk_index
+Each record carries flat metadata used for filter + display:
+    text, source_url, title, section_path, category, chunk_index
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ import re
 import sys
 import time
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -31,13 +33,18 @@ from dotenv import load_dotenv
 from src.config import (
     CHUNK_OVERLAP_CHARS,
     CHUNK_SIZE_CHARS,
+    INGEST_CATEGORIES,
+    LOCAL_EMBED_DIM,
+    LOCAL_EMBED_MODEL,
     PINECONE_CLOUD,
-    PINECONE_EMBED_MODEL,
     PINECONE_INDEX_NAME,
     PINECONE_NAMESPACE,
     PINECONE_REGION,
     RAW_DIR,
 )
+
+ENCODE_BATCH = 64   # sentence-transformers internal batch (fine on MPS / decent CPUs)
+UPSERT_BATCH = 96   # records per Pinecone upsert call
 
 load_dotenv()
 
@@ -154,8 +161,41 @@ def _pinecone_client():
     return Pinecone(api_key=api_key)
 
 
+def _pick_device() -> str:
+    import torch
+
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
+@lru_cache(maxsize=1)
+def _embedder():
+    from sentence_transformers import SentenceTransformer
+
+    device = _pick_device()
+    print(f"Loading {LOCAL_EMBED_MODEL} for local embedding (device={device})...")
+    return SentenceTransformer(LOCAL_EMBED_MODEL, device=device)
+
+
+def _embed_passages(texts: list[str]) -> list[list[float]]:
+    # bge-small-en-v1.5 doesn't need a passage prefix — encode raw text.
+    arr = _embedder().encode(
+        texts,
+        batch_size=ENCODE_BATCH,
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        show_progress_bar=False,
+    )
+    return arr.tolist()
+
+
 def _ensure_index(pc) -> None:
-    """Create the integrated index if it doesn't exist. Idempotent."""
+    """Create a plain (non-integrated) index if it doesn't exist. Idempotent."""
+    from pinecone import ServerlessSpec
+
     existing = {idx["name"] for idx in pc.list_indexes()}
     if PINECONE_INDEX_NAME in existing:
         print(f"Index '{PINECONE_INDEX_NAME}' already exists.")
@@ -163,16 +203,15 @@ def _ensure_index(pc) -> None:
 
     print(
         f"Creating index '{PINECONE_INDEX_NAME}' "
-        f"(model={PINECONE_EMBED_MODEL}, cloud={PINECONE_CLOUD}/{PINECONE_REGION})..."
+        f"(dim={LOCAL_EMBED_DIM}, cosine, {PINECONE_CLOUD}/{PINECONE_REGION})..."
     )
-    pc.create_index_for_model(
+    pc.create_index(
         name=PINECONE_INDEX_NAME,
-        cloud=PINECONE_CLOUD,
-        region=PINECONE_REGION,
-        embed={"model": PINECONE_EMBED_MODEL, "field_map": {"text": "text"}},
+        dimension=LOCAL_EMBED_DIM,
+        metric="cosine",
+        spec=ServerlessSpec(cloud=PINECONE_CLOUD, region=PINECONE_REGION),
     )
 
-    # Wait until ready
     for _ in range(60):
         desc = pc.describe_index(PINECONE_INDEX_NAME)
         if desc.status.get("ready"):
@@ -201,26 +240,24 @@ def _existing_ids(index, namespace: str) -> set[str]:
 
 
 def _upsert_with_retry(
-    index, namespace: str, records: list[dict], max_retries: int = 5
+    index, namespace: str, vectors: list[dict], max_retries: int = 5
 ) -> None:
-    """Upsert one batch, retrying on 429 with exponential backoff."""
-    delay = 60.0
+    """Upsert one batch of raw vectors, retrying with exponential backoff."""
+    delay = 5.0
     for attempt in range(1, max_retries + 1):
         try:
-            index.upsert_records(namespace=namespace, records=records)
+            index.upsert(namespace=namespace, vectors=vectors)
             return
         except Exception as e:
-            msg = str(e)
-            is_rate_limit = "429" in msg or "RESOURCE_EXHAUSTED" in msg
-            if not is_rate_limit or attempt == max_retries:
+            if attempt == max_retries:
                 raise
-            print(f"  ! 429 rate limit (attempt {attempt}/{max_retries}); "
+            print(f"  ! upsert error (attempt {attempt}/{max_retries}): {e}; "
                   f"sleeping {delay:.0f}s then retrying...")
             time.sleep(delay)
-            delay = min(delay * 2, 300)
+            delay = min(delay * 2, 60)
 
 
-def build_index(throttle_seconds: float = 10.0, force: bool = False) -> None:
+def build_index(throttle_seconds: float = 0.0, force: bool = False) -> None:
     if not RAW_DIR.exists():
         raise SystemExit(f"No raw content at {RAW_DIR}. Run `python -m src.scraper` first.")
 
@@ -232,7 +269,15 @@ def build_index(throttle_seconds: float = 10.0, force: bool = False) -> None:
     all_chunks: list[Chunk] = []
     for path in md_files:
         all_chunks.extend(chunk_file(path))
-    print(f"  -> {len(all_chunks)} chunks")
+    print(f"  -> {len(all_chunks)} chunks total")
+
+    if INGEST_CATEGORIES:
+        before = len(all_chunks)
+        wanted = set(INGEST_CATEGORIES)
+        all_chunks = [c for c in all_chunks if c.category in wanted]
+        print(f"  -> filtered to {len(all_chunks)} chunks in categories "
+              f"{sorted(wanted)} (dropped {before - len(all_chunks)})")
+
     if not all_chunks:
         raise SystemExit("No chunks produced.")
 
@@ -252,23 +297,29 @@ def build_index(throttle_seconds: float = 10.0, force: bool = False) -> None:
             print(f"\nNothing to do. total_vector_count={stats.get('total_vector_count')}")
             return
 
-    # Pinecone integrated upsert_records: max ~96 records / batch.
-    BATCH_SIZE = 96
-    batches = list(_batch([asdict(c) for c in all_chunks], BATCH_SIZE))
+    # Warm-load the embedder once so the per-batch timing is honest.
+    _embedder()
+
+    batches = list(_batch(all_chunks, UPSERT_BATCH))
     print(
-        f"Upserting {len(all_chunks)} records in {len(batches)} batches "
-        f"(throttle={throttle_seconds}s/batch, ~{len(batches) * throttle_seconds / 60:.0f} min)..."
+        f"Embedding + upserting {len(all_chunks)} records in {len(batches)} batches..."
     )
     started = time.time()
-    for i, batch in enumerate(batches, 1):
-        _upsert_with_retry(index, PINECONE_NAMESPACE, batch)
+    for i, chunk_batch in enumerate(batches, 1):
+        texts = [c.text for c in chunk_batch]
+        vecs = _embed_passages(texts)
+        records = []
+        for c, vec in zip(chunk_batch, vecs):
+            meta = {k: v for k, v in asdict(c).items() if k != "_id"}
+            records.append({"id": c._id, "values": vec, "metadata": meta})
+        _upsert_with_retry(index, PINECONE_NAMESPACE, records)
         if i == 1 or i % 10 == 0 or i == len(batches):
             elapsed = time.time() - started
             rate = i / elapsed if elapsed > 0 else 0
             eta = (len(batches) - i) / rate if rate > 0 else 0
-            print(f"  [{i}/{len(batches)}] upserted {len(batch)} records  "
+            print(f"  [{i}/{len(batches)}] embedded+upserted {len(chunk_batch)} records  "
                   f"(elapsed {elapsed/60:.1f}m, eta {eta/60:.0f}m)")
-        if i < len(batches):
+        if throttle_seconds > 0 and i < len(batches):
             time.sleep(throttle_seconds)
 
     stats = index.describe_index_stats()
@@ -281,9 +332,8 @@ def main() -> None:
     p.add_argument(
         "--throttle",
         type=float,
-        default=10.0,
-        help="Seconds to sleep between batches (default 10; "
-             "free tier embedding cap is ~250K tokens/min)",
+        default=0.0,
+        help="Seconds to sleep between batches (default 0; embeddings are local now)",
     )
     p.add_argument(
         "--force",

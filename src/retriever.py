@@ -15,11 +15,17 @@ from functools import lru_cache
 from dotenv import load_dotenv
 
 from src.config import (
+    LOCAL_EMBED_MODEL,
+    LOCAL_RERANK_MODEL,
     PINECONE_INDEX_NAME,
     PINECONE_NAMESPACE,
     RETRIEVE_FETCH_K,
     TOP_K_DEFAULT,
 )
+
+# bge-small-en-v1.5 retrieval works best with this query-side instruction.
+# Documents (passages) need no prefix.
+BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 
 load_dotenv()
 
@@ -48,26 +54,37 @@ def _index():
     return pc.Index(PINECONE_INDEX_NAME)
 
 
+def _pick_device() -> str:
+    import torch
+
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 @lru_cache(maxsize=1)
 def _embedder():
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer("intfloat/multilingual-e5-large")
+    return SentenceTransformer(LOCAL_EMBED_MODEL, device=_pick_device())
 
 
 @lru_cache(maxsize=1)
 def _reranker():
     from sentence_transformers import CrossEncoder
 
-    return CrossEncoder("BAAI/bge-reranker-v2-m3")
+    # Pin reranker to CPU. Reason: on Apple Silicon MPS, the first forward pass
+    # through bge-reranker-v2-m3's XLM-R-large architecture triggers ~9 min of
+    # kernel compilation per shape — terrible startup UX. CPU rerank for 25
+    # candidate pairs takes ~3-5s on M-series Macs with no compile cost.
+    return CrossEncoder(LOCAL_RERANK_MODEL, device="cpu")
 
 
 def _embed_query(text: str) -> list[float]:
-    # multilingual-e5 expects a "query: " / "passage: " prefix; ingestion was
-    # done via Pinecone integrated which applies the passage prefix server-side,
-    # so for the query side we add "query: " here to match.
     vec = _embedder().encode(
-        f"query: {text}",
+        f"{BGE_QUERY_INSTRUCTION}{text}",
         normalize_embeddings=True,
         convert_to_numpy=True,
     )
