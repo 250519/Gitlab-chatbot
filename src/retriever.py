@@ -1,18 +1,29 @@
 """Pinecone retriever with local embedding + rerank.
 
-Originally this used Pinecone integrated inference (server-side embedding +
-rerank). The free-tier monthly token quota for ``multilingual-e5-large`` covers
-both ingest and query, so once it's exhausted no queries land either. This
-module embeds the query locally with the same ``intfloat/multilingual-e5-large``
-model that ingest used (so vectors line up against what Pinecone already
-stores) and reranks locally with ``BAAI/bge-reranker-v2-m3``.
+Embeds the query locally with the same model used at ingest time (so vectors
+line up against what Pinecone already stores) and reranks locally with a
+cross-encoder. Bypasses Pinecone's hosted-embedding quota entirely.
 """
 from __future__ import annotations
 
 import os
+import warnings
 from functools import lru_cache
 
 from dotenv import load_dotenv
+
+# Silence the harmless transformers deprecation about lazy-loading
+# zoedepth.image_processing — it fires when sentence-transformers loads
+# regardless of whether we use any image model. Filter must be installed
+# before sentence_transformers is imported.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*zoedepth.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Accessing `__path__` from.*",
+)
 
 from src.config import (
     LOCAL_EMBED_MODEL,

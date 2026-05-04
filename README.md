@@ -14,9 +14,9 @@ a Streamlit chat UI, and **open-source Llama** running on **Groq**.
 3. **Embeds locally** with `BAAI/bge-small-en-v1.5` (384-dim) and **upserts**
    the raw vectors to **Pinecone** with flat metadata for filtering.
 4. On each question: query embedded locally → dense vector search →
-   **`BAAI/bge-reranker-v2-m3`** local rerank → optional category filter → Groq
-   Llama → streamed answer with inline `[1]` citations linked to the source
-   page and section.
+   **`cross-encoder/ms-marco-MiniLM-L-12-v2`** local rerank → optional category
+   filter → Groq Llama → streamed answer with inline `[1]` citations linked to
+   the source page and section.
 
 ## Quickstart (local)
 
@@ -73,12 +73,12 @@ Edit `src/config.py` to change models, chunk sizes, or top-k bounds.
 | Knob | Default | Notes |
 |------|---------|-------|
 | `LOCAL_EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | local sentence-transformers, 384-dim |
-| `LOCAL_RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | cross-encoder, runs on CPU for fast cold-start |
+| `LOCAL_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L-12-v2` | ~33M-param cross-encoder, runs on CPU; 10-15× faster than bge-reranker-v2-m3 |
 | `GROQ_DEFAULT_MODEL` | `llama-3.3-70b-versatile` | best quality |
 | `GROQ_FAST_MODEL` | `llama-3.1-8b-instant` | used for follow-up generation |
 | `CHUNK_SIZE_CHARS` | 2000 | ~500 tokens |
 | `CHUNK_OVERLAP_CHARS` | 200 | header-aware splitter handles most boundaries |
-| `RETRIEVE_FETCH_K` | 25 | over-fetched before rerank |
+| `RETRIEVE_FETCH_K` | 12 | over-fetched before rerank |
 | `TOP_K_DEFAULT` | 5 | final results to LLM (tunable in sidebar) |
 | `CONFIDENCE_*` | floats in [0, 1] | rerank-score thresholds for refuse / low / high bands |
 | `CITATION_SUPPORT_THRESHOLD` | 0.1 | sentence↔chunk score below this → "weakly supported" |

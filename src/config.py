@@ -20,7 +20,11 @@ PINECONE_REGION = "us-east-1"
 # bge-small-en-v1.5 is 384-dim, English-only, ~25x faster than e5-large.
 LOCAL_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 LOCAL_EMBED_DIM = 384
-LOCAL_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
+# ms-marco-MiniLM-L-12-v2 is ~33M params (vs 568M for bge-reranker-v2-m3) —
+# roughly 10-15x faster on CPU with comparable quality on English retrieval.
+# Note: this model outputs raw logits, NOT sigmoid'd probabilities. The
+# CONFIDENCE_* and CITATION_SUPPORT_THRESHOLD values below are tuned for it.
+LOCAL_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
 
 # --- Groq ---
 GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
@@ -31,24 +35,24 @@ GROQ_AVAILABLE_MODELS = [GROQ_DEFAULT_MODEL, GROQ_FAST_MODEL]
 CHUNK_SIZE_CHARS = 2000
 CHUNK_OVERLAP_CHARS = 200
 TOP_K_DEFAULT = 5            # final results returned to LLM (post-rerank)
-RETRIEVE_FETCH_K = 25        # over-fetch before reranking
+RETRIEVE_FETCH_K = 12        # over-fetch before reranking
 TOP_K_MIN = 2
 TOP_K_MAX = 10
 
 # --- Confidence gating ---
-# bge-reranker-v2-m3 returns probability-like scores in [0, 1]. Empirically:
-# strongly-relevant top hits land at 0.9+; off-topic queries top out below 0.01.
+# ms-marco-MiniLM-L-12-v2 outputs raw logits. Empirically on this corpus:
+# strongly-relevant top hits land at +7 to +9; off-topic queries land below -8.
 # Below REFUSE: hard refusal, no LLM call. Below LOW: "Low" badge but answer.
 # Above HIGH: "High" badge. Otherwise "Medium".
-CONFIDENCE_REFUSE_BELOW = 0.05
-CONFIDENCE_LOW_BELOW = 0.3
-CONFIDENCE_HIGH_ABOVE = 0.7
+CONFIDENCE_REFUSE_BELOW = -5.0
+CONFIDENCE_LOW_BELOW = 0.0
+CONFIDENCE_HIGH_ABOVE = 5.0
 
 # --- Citation faithfulness ---
-# Cross-encoder score between a cited sentence and its cited chunk; below this
-# we flag the citation as "weakly supported". Lower bar than retrieval because
-# a single sentence is often shorter / less keyword-dense than a full query.
-CITATION_SUPPORT_THRESHOLD = 0.1
+# Cross-encoder logit between a cited sentence and its cited chunk; below this
+# we flag the citation as "weakly supported". Lenient because a sentence is
+# shorter / less keyword-dense than a full query.
+CITATION_SUPPORT_THRESHOLD = -3.0
 
 # --- Categories (metadata tag taxonomy) ---
 # Order roughly mirrors a sidebar; "general" is the catch-all.
